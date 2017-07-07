@@ -1,5 +1,9 @@
 # Changes
 
+## 1.4.0
+
+* [This is a naive implementation of the join operation](https://github.com/frewsxcv/rust-threadpool/pull/63)
+
 ## 1.3.2
 
 * [Enable `#[deprecated]` doc, requires Rust 1.9](https://github.com/frewsxcv/rust-threadpool/pull/38)
