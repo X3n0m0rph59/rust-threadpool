@@ -166,6 +166,8 @@ pub struct ThreadPool {
     shared_data: Arc<ThreadPoolSharedData>,
 }
 
+unsafe impl Sync for ThreadPool { }
+
 impl ThreadPool {
     /// Spawns a new thread pool with `num_threads` threads.
     ///
@@ -351,7 +353,7 @@ impl ThreadPool {
     /// pool.join();
     /// assert_eq!(42, test_count.load(Ordering::Relaxed));
     /// ```
-    pub fn join(&mut self) {
+    pub fn join(&self) {
         while self.shared_data.has_work() {
             let mut lock = self.shared_data.empty_trigger.lock().unwrap();
             while *lock == false {
@@ -433,6 +435,7 @@ mod test {
     use std::sync::{Arc, Barrier};
     use std::thread::{self, sleep};
     use std::time::Duration;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const TEST_TASKS: usize = 4;
 
@@ -695,13 +698,8 @@ mod test {
     }
     
     #[test]
-    fn test_multi_join() {
-        use std::time::Duration;
-        use std::thread::sleep;
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let mut pool = ThreadPool::new_with_name("multi join test", 8);
+    fn test_repeate_join() {
+        let pool = ThreadPool::new_with_name("repeate join test", 8);
         let test_count = Arc::new(AtomicUsize::new(0));
 
         for _ in 0..42 {
@@ -715,7 +713,6 @@ mod test {
         println!("{:?}", pool);
         pool.join();
         assert_eq!(42, test_count.load(Ordering::Acquire));
-
         for _ in 0..42 {
             let test_count = test_count.clone();
             pool.execute(move || {
@@ -725,5 +722,49 @@ mod test {
         }
         pool.join();
         assert_eq!(84, test_count.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_multi_join() {
+        let pool = Arc::new(
+                    ThreadPool::new_with_name("multi join test", 8));
+        let test_count = Arc::new(AtomicUsize::new(0));
+
+        let pool_r0 = pool.clone();
+        let pool_r1 = pool.clone();
+        let test_count_r0 = test_count.clone();
+        let test_count_r1 = test_count.clone();
+
+        let t0 = thread::spawn(move||{
+            for _ in 0..21 {
+                let test_count = test_count_r0.clone();
+                pool_r0.execute(move || {
+                    sleep(Duration::from_secs(2));
+                    test_count.fetch_add(1, Ordering::Release);
+                });
+            }
+            pool_r0.join();
+            assert_eq!(42, test_count_r0.load(Ordering::Acquire));
+        });
+
+        let t1 = thread::spawn(move||{
+            for _ in 0..21 {
+                let test_count = test_count_r1.clone();
+                pool_r1.execute(move || {
+                    sleep(Duration::from_secs(2));
+                    test_count.fetch_add(1, Ordering::Release);
+                });
+            }
+            pool_r1.join();
+            assert_eq!(42, test_count_r1.load(Ordering::Acquire));
+        });
+
+
+        sleep(Duration::from_secs(1));
+        pool.join();
+        assert_eq!(42, test_count.load(Ordering::Acquire));
+
+        t0.join().unwrap();
+        t1.join().unwrap();
     }
 }
