@@ -80,7 +80,7 @@
 
 use std::fmt;
 use std::sync::mpsc::{channel, Sender, Receiver};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Condvar};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::{Builder, panicking};
 use std::convert::Into;
@@ -100,28 +100,19 @@ type Thunk<'a> = Box<FnBox + Send + 'a>;
 struct Sentinel<'a> {
     name: Option<String>,
     jobs: &'a Arc<Mutex<Receiver<Thunk<'static>>>>,
-    stored_jobs_counter: &'a Arc<AtomicUsize>,
-    thread_counter: &'a Arc<AtomicUsize>,
-    thread_count_max: &'a Arc<AtomicUsize>,
-    thread_count_panic: &'a Arc<AtomicUsize>,
+    shared_data: &'a Arc<ThreadPoolSharedData>,
     active: bool,
 }
 
 impl<'a> Sentinel<'a> {
     fn new(name: Option<String>,
            jobs: &'a Arc<Mutex<Receiver<Thunk<'static>>>>,
-           stored_jobs_counter: &'a Arc<AtomicUsize>,
-           thread_counter: &'a Arc<AtomicUsize>,
-           thread_count_max: &'a Arc<AtomicUsize>,
-           thread_count_panic: &'a Arc<AtomicUsize>)
+           shared_data: &'a Arc<ThreadPoolSharedData>)
            -> Sentinel<'a> {
         Sentinel {
             name: name,
             jobs: jobs,
-            stored_jobs_counter: stored_jobs_counter,
-            thread_counter: thread_counter,
-            thread_count_max: thread_count_max,
-            thread_count_panic: thread_count_panic,
+            shared_data: shared_data,
             active: true,
         }
     }
@@ -135,17 +126,30 @@ impl<'a> Sentinel<'a> {
 impl<'a> Drop for Sentinel<'a> {
     fn drop(&mut self) {
         if self.active {
-            self.thread_counter.fetch_sub(1, Ordering::SeqCst);
+            self.shared_data.active_count.fetch_sub(1, Ordering::SeqCst);
             if panicking() {
-                self.thread_count_panic.fetch_add(1, Ordering::SeqCst);
+                self.shared_data.panic_count.fetch_add(1, Ordering::SeqCst);
             }
             spawn_in_pool(self.name.clone(),
                           self.jobs.clone(),
-                          self.stored_jobs_counter.clone(),
-                          self.thread_counter.clone(),
-                          self.thread_count_max.clone(),
-                          self.thread_count_panic.clone())
+                          self.shared_data.clone())
         }
+    }
+}
+
+struct ThreadPoolSharedData {
+    empty_trigger: Mutex<bool>,
+    empty_condvar: Condvar,
+    stored_jobs_counter: AtomicUsize,
+    active_count: AtomicUsize,
+    max_thread_count: AtomicUsize,
+    panic_count: AtomicUsize,
+}
+
+impl ThreadPoolSharedData {
+    fn has_work(&self) -> bool {
+        self.stored_jobs_counter.load(Ordering::SeqCst) > 0
+            || self.active_count.load(Ordering::SeqCst) > 0
     }
 }
 
@@ -159,10 +163,7 @@ pub struct ThreadPool {
     name: Option<String>,
     jobs: Sender<Thunk<'static>>,
     job_receiver: Arc<Mutex<Receiver<Thunk<'static>>>>,
-    stored_jobs_counter: Arc<AtomicUsize>,
-    active_count: Arc<AtomicUsize>,
-    max_count: Arc<AtomicUsize>,
-    panic_count: Arc<AtomicUsize>,
+    shared_data: Arc<ThreadPoolSharedData>,
 }
 
 impl ThreadPool {
@@ -215,29 +216,28 @@ impl ThreadPool {
 
         let (tx, rx) = channel::<Thunk<'static>>();
         let rx = Arc::new(Mutex::new(rx));
-        let stored_jobs_counter = Arc::new(AtomicUsize::new(0));
-        let active_count = Arc::new(AtomicUsize::new(0));
-        let max_count = Arc::new(AtomicUsize::new(num_threads));
-        let panic_count = Arc::new(AtomicUsize::new(0));
+
+        let shared_data = Arc::new(ThreadPoolSharedData {
+            empty_condvar: Condvar::new(),
+            empty_trigger: Mutex::new(false),
+            stored_jobs_counter: AtomicUsize::new(0),
+            active_count: AtomicUsize::new(0),
+            max_thread_count: AtomicUsize::new(num_threads),
+            panic_count: AtomicUsize::new(0),
+        });
 
         // Threadpool threads
         for _ in 0..num_threads {
             spawn_in_pool(name.clone(),
                           rx.clone(),
-                          stored_jobs_counter.clone(),
-                          active_count.clone(),
-                          max_count.clone(),
-                          panic_count.clone());
+                          shared_data.clone());
         }
 
         ThreadPool {
             name: name,
             jobs: tx,
-            job_receiver: rx.clone(),
-            stored_jobs_counter: stored_jobs_counter,
-            active_count: active_count,
-            max_count: max_count,
-            panic_count: panic_count,
+            job_receiver: rx,
+            shared_data: shared_data,
         }
     }
 
@@ -245,7 +245,7 @@ impl ThreadPool {
     pub fn execute<F>(&self, job: F)
         where F: FnOnce() + Send + 'static
     {
-        self.stored_jobs_counter.fetch_add(1, Ordering::Relaxed);
+        self.shared_data.stored_jobs_counter.fetch_add(1, Ordering::SeqCst);
         self.jobs.send(Box::new(job)).unwrap();
     }
 
@@ -269,12 +269,12 @@ impl ThreadPool {
     /// assert_eq!(pool.active_count(), num_threads);
     /// ```
     pub fn active_count(&self) -> usize {
-        self.active_count.load(Ordering::Relaxed)
+        self.shared_data.active_count.load(Ordering::SeqCst)
     }
 
     /// Returns the number of created threads
     pub fn max_count(&self) -> usize {
-        self.max_count.load(Ordering::Relaxed)
+        self.shared_data.max_thread_count.load(Ordering::Relaxed)
     }
 
     /// Returns the number of panicked threads over the lifetime of the pool.
@@ -297,7 +297,7 @@ impl ThreadPool {
     /// assert_eq!(pool.panic_count(), num_threads);
     /// ```
     pub fn panic_count(&self) -> usize {
-        self.panic_count.load(Ordering::Relaxed)
+        self.shared_data.panic_count.load(Ordering::Relaxed)
     }
 
     /// **Deprecated: Use `ThreadPool::set_num_threads`**
@@ -315,16 +315,13 @@ impl ThreadPool {
     /// This function will panic if `num_threads` is 0.
     pub fn set_num_threads(&mut self, num_threads: usize) {
         assert!(num_threads >= 1);
-        let prev_num_threads = (*self.max_count).swap(num_threads, Ordering::Release);
+        let prev_num_threads = self.shared_data.max_thread_count.swap(num_threads, Ordering::Release);
         if let Some(num_spawn) = num_threads.checked_sub(prev_num_threads) {
             // Spawn new threads
             for _ in 0..num_spawn {
                 spawn_in_pool(self.name.clone(),
                               self.job_receiver.clone(),
-                              self.stored_jobs_counter.clone(),
-                              self.active_count.clone(),
-                              self.max_count.clone(),
-                              self.panic_count.clone());
+                              self.shared_data.clone());
             }
         }
     }
@@ -339,13 +336,14 @@ impl ThreadPool {
     /// use std::sync::Arc;
     /// use std::sync::atomic::{AtomicUsize, Ordering};
     ///
-    /// let mut pool = ThreadPool::new(8);
+    /// let mut pool = ThreadPool::new_with_name("join test", 8);
     /// let test_count = Arc::new(AtomicUsize::new(0));
     /// 
     /// for _ in 0..42 {
     ///     let test_count = test_count.clone();
     ///     pool.execute(move || {
     ///         sleep(Duration::from_secs(2));
+    ///         // this write must happen after the sleep
     ///         test_count.fetch_add(1, Ordering::Relaxed);
     ///     });
     /// }
@@ -354,14 +352,14 @@ impl ThreadPool {
     /// assert_eq!(42, test_count.load(Ordering::Relaxed));
     /// ```
     pub fn join(&mut self) {
-        use std::thread::sleep;
-        use std::time::Duration;
-        
-        while self.stored_jobs_counter.load(Ordering::SeqCst) > 0 {
-            sleep(Duration::from_secs(1));
-        }
-        while self.active_count.load(Ordering::SeqCst) > 0 {
-            sleep(Duration::from_secs(1));
+        while self.shared_data.has_work() {
+            let mut lock = self.shared_data.empty_trigger.lock().unwrap();
+            while *lock == false {
+                lock = self.shared_data.empty_condvar.wait(lock).unwrap();
+            }
+
+            // prepare the trigger for the next join
+            *lock = false;
         }
     }
 }
@@ -380,10 +378,7 @@ impl fmt::Debug for ThreadPool {
 
 fn spawn_in_pool(name: Option<String>,
                  jobs: Arc<Mutex<Receiver<Thunk<'static>>>>,
-                 stored_jobs_counter: Arc<AtomicUsize>,
-                 thread_counter: Arc<AtomicUsize>,
-                 thread_count_max: Arc<AtomicUsize>,
-                 thread_count_panic: Arc<AtomicUsize>) {
+                 shared_data: Arc<ThreadPoolSharedData>) {
     let mut builder = Builder::new();
     if let Some(ref name) = name {
         builder = builder.name(name.clone());
@@ -392,16 +387,13 @@ fn spawn_in_pool(name: Option<String>,
             // Will spawn a new thread on panic unless it is cancelled.
             let sentinel = Sentinel::new(name,
                                          &jobs,
-                                         &stored_jobs_counter,
-                                         &thread_counter,
-                                         &thread_count_max,
-                                         &thread_count_panic);
+                                         &shared_data);
 
             loop {
                 // Shutdown this thread if the pool has become smaller
-                let thread_counter_val = thread_counter.load(Ordering::Acquire);
-                let thread_count_max_val = thread_count_max.load(Ordering::Relaxed);
-                if thread_counter_val >= thread_count_max_val {
+                let thread_counter_val = shared_data.active_count.load(Ordering::Acquire);
+                let max_thread_count_val = shared_data.max_thread_count.load(Ordering::Relaxed);
+                if thread_counter_val >= max_thread_count_val {
                     break;
                 }
                 let message = {
@@ -417,10 +409,16 @@ fn spawn_in_pool(name: Option<String>,
                     Err(..) => break,
                 };
                 // Do not allow IR around the job execution
-                thread_counter.fetch_add(1, Ordering::SeqCst);
-                stored_jobs_counter.fetch_sub(1, Ordering::SeqCst);
+                shared_data.active_count.fetch_add(1, Ordering::SeqCst);
+                shared_data.stored_jobs_counter.fetch_sub(1, Ordering::SeqCst);
+
                 job.call_box();
-                thread_counter.fetch_sub(1, Ordering::SeqCst);
+
+                shared_data.active_count.fetch_sub(1, Ordering::SeqCst);
+                if shared_data.has_work() == false {
+                    *shared_data.empty_trigger.lock().unwrap() = true;
+                    shared_data.empty_condvar.notify_all();
+                }
             }
 
             sentinel.cancel();
@@ -696,4 +694,36 @@ mod test {
         assert_eq!(debug, "ThreadPool { name: None, active_count: 1, max_count: 4 }");
     }
     
+    #[test]
+    fn test_multi_join() {
+        use std::time::Duration;
+        use std::thread::sleep;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let mut pool = ThreadPool::new_with_name("multi join test", 8);
+        let test_count = Arc::new(AtomicUsize::new(0));
+
+        for _ in 0..42 {
+            let test_count = test_count.clone();
+            pool.execute(move || {
+                sleep(Duration::from_secs(2));
+                test_count.fetch_add(1, Ordering::Release);
+            });
+        }
+
+        println!("{:?}", pool);
+        pool.join();
+        assert_eq!(42, test_count.load(Ordering::Acquire));
+
+        for _ in 0..42 {
+            let test_count = test_count.clone();
+            pool.execute(move || {
+                sleep(Duration::from_secs(2));
+                test_count.fetch_add(1, Ordering::Relaxed);
+            });
+        }
+        pool.join();
+        assert_eq!(84, test_count.load(Ordering::Relaxed));
+    }
 }
