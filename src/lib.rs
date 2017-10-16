@@ -79,8 +79,8 @@
 //! ```
 
 extern crate num_cpus;
-extern crate libc;
 extern crate nix;
+extern crate libc;
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -132,6 +132,20 @@ impl<'a> Drop for Sentinel<'a> {
     }
 }
 
+
+#[derive(Debug, Copy, Clone)]
+pub enum SchedulingClass {
+    Normal(i32),
+    Realtime,
+}
+
+impl Default for SchedulingClass {
+    fn default() -> Self {
+        SchedulingClass::Normal(0)
+    }
+}
+
+
 /// [`ThreadPool`] factory, which can be used in order to configure the properties of the
 /// [`ThreadPool`].
 ///
@@ -161,6 +175,7 @@ pub struct Builder {
     num_threads: Option<usize>,
     thread_name: Option<String>,
     thread_stack_size: Option<usize>,
+    scheduling_class: SchedulingClass,
 }
 
 impl Builder {
@@ -178,6 +193,7 @@ impl Builder {
             num_threads: None,
             thread_name: None,
             thread_stack_size: None,
+            scheduling_class: SchedulingClass::Normal(0),
         }
     }
 
@@ -267,6 +283,11 @@ impl Builder {
         self
     }
 
+    pub fn thread_scheduling_class(mut self, scheduling_class: SchedulingClass) -> Builder {
+        self.scheduling_class = scheduling_class;
+        self
+    }
+
     /// Finalize the [`Builder`] and build the [`ThreadPool`].
     ///
     /// [`Builder`]: struct.Builder.html
@@ -300,7 +321,7 @@ impl Builder {
 
         // Threadpool threads
         for _ in 0..num_threads {
-            spawn_in_pool(shared_data.clone(), None);
+            spawn_in_pool(shared_data.clone(), Some(self.scheduling_class));
         }
 
         ThreadPool {
@@ -347,12 +368,6 @@ pub struct ThreadPool {
     // quit.
     jobs: Sender<Thunk<'static>>,
     shared_data: Arc<ThreadPoolSharedData>,
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum SchedulingClass {
-    Normal,
-    Realtime
 }
 
 impl ThreadPool {
@@ -406,10 +421,6 @@ impl ThreadPool {
             .num_threads(num_threads)
             .thread_name(name)
             .build()
-    }
-
-    pub fn with_name_and_class(name: String, scheduling_class: SchedulingClass, num_threads: usize) -> ThreadPool {
-        ThreadPool::new_pool_with_class(Some(name), scheduling_class, num_threads)
     }
 
     /// **Deprecated: Use [`ThreadPool::with_name`](#method.with_name)**
@@ -796,7 +807,17 @@ impl PartialEq for ThreadPool {
 }
 impl Eq for ThreadPool {}
 
+<<<<<<< HEAD
 fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>, scheduling_class: Option<SchedulingClass>) {
+=======
+
+
+
+fn spawn_in_pool(
+    shared_data: Arc<ThreadPoolSharedData>,
+    scheduling_class: Option<SchedulingClass>,
+) {
+>>>>>>> Rework Code
     let mut builder = thread::Builder::new();
     if let Some(ref name) = shared_data.name {
         builder = builder.name(name.clone());
@@ -807,11 +828,18 @@ fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>, scheduling_class: Optio
     builder
         .spawn(move || {
             match scheduling_class {
-                None => { /* Do nothing */ }
-                Some(SchedulingClass::Normal) => {},
+                None => {}
+                Some(SchedulingClass::Normal(niceval)) => {
+                    unsafe { libc::nice(niceval) };
+                }
                 Some(SchedulingClass::Realtime) => {
-                    let tid = nix::unistd::gettid();
-                    unsafe { libc::sched_setscheduler(tid.into(), libc::SCHED_RR, 0 as *mut libc::sched_param) };
+                    unsafe {
+                        libc::sched_setscheduler(
+                            0,
+                            libc::SCHED_RR,
+                            &mut libc::sched_param { sched_priority: 99 } as *mut libc::sched_param,
+                        )
+                    };
                 }
             }
 
