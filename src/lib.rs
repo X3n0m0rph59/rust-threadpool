@@ -79,8 +79,8 @@
 //! ```
 
 extern crate num_cpus;
-extern crate libc;
 extern crate nix;
+extern crate libc;
 
 use std::fmt;
 use std::sync::mpsc::{channel, Sender, Receiver};
@@ -132,6 +132,20 @@ impl<'a> Drop for Sentinel<'a> {
     }
 }
 
+
+#[derive(Debug, Copy, Clone)]
+pub enum SchedulingClass {
+    Normal(i32),
+    Realtime,
+}
+
+impl Default for SchedulingClass {
+    fn default() -> Self {
+        SchedulingClass::Normal(0)
+    }
+}
+
+
 /// [`ThreadPool`] factory, which can be used in order to configure the properties of the
 /// [`ThreadPool`].
 ///
@@ -161,6 +175,7 @@ pub struct Builder {
     num_threads: Option<usize>,
     thread_name: Option<String>,
     thread_stack_size: Option<usize>,
+    scheduling_class: SchedulingClass,
 }
 
 impl Builder {
@@ -178,6 +193,7 @@ impl Builder {
             num_threads: None,
             thread_name: None,
             thread_stack_size: None,
+            scheduling_class: SchedulingClass::Normal(0),
         }
     }
 
@@ -267,6 +283,11 @@ impl Builder {
         self
     }
 
+    pub fn thread_scheduling_class(mut self, scheduling_class: SchedulingClass) -> Builder {
+        self.scheduling_class = scheduling_class;
+        self
+    }
+
     /// Finalize the [`Builder`] and build the [`ThreadPool`].
     ///
     /// [`Builder`]: struct.Builder.html
@@ -299,7 +320,7 @@ impl Builder {
 
         // Threadpool threads
         for _ in 0..num_threads {
-            spawn_in_pool(shared_data.clone());
+            spawn_in_pool(shared_data.clone(), Some(self.scheduling_class));
         }
 
         ThreadPool {
@@ -345,12 +366,6 @@ pub struct ThreadPool {
     // quit.
     jobs: Sender<Thunk<'static>>,
     shared_data: Arc<ThreadPoolSharedData>,
-}
-
-#[derive(Debug, Copy, Clone)]
-pub enum SchedulingClass {
-    Normal,
-    Realtime
 }
 
 impl ThreadPool {
@@ -406,74 +421,11 @@ impl ThreadPool {
             .build()
     }
 
-    pub fn with_name_and_class(name: String, scheduling_class: SchedulingClass, num_threads: usize) -> ThreadPool {
-        ThreadPool::new_pool_with_class(Some(name), scheduling_class, num_threads)
-    }
-
     /// **Deprecated: Use [`ThreadPool::with_name`](#method.with_name)**
     #[inline(always)]
     #[deprecated(since = "1.4.0", note = "use ThreadPool::with_name")]
     pub fn new_with_name(name: String, num_threads: usize) -> ThreadPool {
-<<<<<<< HEAD
-        ThreadPool::with_name(name, num_threads)
-    }
-
-    #[inline]
-    fn new_pool(name: Option<String>, num_threads: usize) -> ThreadPool {
-        assert!(num_threads >= 1);
-
-        let (tx, rx) = channel::<Thunk<'static>>();
-
-        let shared_data = Arc::new(ThreadPoolSharedData {
-            name: name,
-            job_receiver: Mutex::new(rx),
-            empty_condvar: Condvar::new(),
-            empty_trigger: Mutex::new(()),
-            queued_count: AtomicUsize::new(0),
-            active_count: AtomicUsize::new(0),
-            max_thread_count: AtomicUsize::new(num_threads),
-            panic_count: AtomicUsize::new(0),
-        });
-
-        // Threadpool threads
-        for _ in 0..num_threads {
-            spawn_in_pool(shared_data.clone(), None);
-        }
-
-        ThreadPool {
-            jobs: tx,
-            shared_data: shared_data,
-        }
-    }
-
-    fn new_pool_with_class(name: Option<String>, scheduling_class: SchedulingClass, num_threads: usize) -> ThreadPool {
-        assert!(num_threads >= 1);
-
-        let (tx, rx) = channel::<Thunk<'static>>();
-
-        let shared_data = Arc::new(ThreadPoolSharedData {
-            name: name,
-            job_receiver: Mutex::new(rx),
-            empty_condvar: Condvar::new(),
-            empty_trigger: Mutex::new(()),
-            queued_count: AtomicUsize::new(0),
-            active_count: AtomicUsize::new(0),
-            max_thread_count: AtomicUsize::new(num_threads),
-            panic_count: AtomicUsize::new(0),
-        });
-
-        // Threadpool threads
-        for _ in 0..num_threads {
-            spawn_in_pool(shared_data.clone(), Some(scheduling_class));
-        }
-
-        ThreadPool {
-            jobs: tx,
-            shared_data: shared_data,
-        }
-=======
         Self::with_name(name, num_threads)
->>>>>>> upstream/master
     }
 
     /// Executes the function `job` on a thread in the pool.
@@ -783,13 +735,11 @@ impl Eq for ThreadPool {}
 
 
 
-<<<<<<< HEAD
-fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>, scheduling_class: Option<SchedulingClass>) {
-    let mut builder = Builder::new();
-=======
-fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>) {
+fn spawn_in_pool(
+    shared_data: Arc<ThreadPoolSharedData>,
+    scheduling_class: Option<SchedulingClass>,
+) {
     let mut builder = thread::Builder::new();
->>>>>>> upstream/master
     if let Some(ref name) = shared_data.name {
         builder = builder.name(name.clone());
     }
@@ -799,11 +749,18 @@ fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>) {
     builder
         .spawn(move || {
             match scheduling_class {
-                None => { /* Do nothing */ }
-                Some(SchedulingClass::Normal) => {},
+                None => {}
+                Some(SchedulingClass::Normal(niceval)) => {
+                    unsafe { libc::nice(niceval) };
+                }
                 Some(SchedulingClass::Realtime) => {
-                    let tid = nix::unistd::gettid();
-                    unsafe { libc::sched_setscheduler(tid.into(), libc::SCHED_RR, 0 as *mut libc::sched_param) };
+                    unsafe {
+                        libc::sched_setscheduler(
+                            0,
+                            libc::SCHED_RR,
+                            &mut libc::sched_param { sched_priority: 99 } as *mut libc::sched_param,
+                        )
+                    };
                 }
             }
 
