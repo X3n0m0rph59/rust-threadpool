@@ -79,6 +79,8 @@
 //! ```
 
 extern crate num_cpus;
+extern crate libc;
+extern crate nix;
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -125,7 +127,7 @@ impl<'a> Drop for Sentinel<'a> {
                 self.shared_data.panic_count.fetch_add(1, Ordering::SeqCst);
             }
             self.shared_data.no_work_notify_all();
-            spawn_in_pool(self.shared_data.clone())
+            spawn_in_pool(self.shared_data.clone(), None)
         }
     }
 }
@@ -298,7 +300,7 @@ impl Builder {
 
         // Threadpool threads
         for _ in 0..num_threads {
-            spawn_in_pool(shared_data.clone());
+            spawn_in_pool(shared_data.clone(), None);
         }
 
         ThreadPool {
@@ -345,6 +347,12 @@ pub struct ThreadPool {
     // quit.
     jobs: Sender<Thunk<'static>>,
     shared_data: Arc<ThreadPoolSharedData>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum SchedulingClass {
+    Normal,
+    Realtime
 }
 
 impl ThreadPool {
@@ -400,11 +408,74 @@ impl ThreadPool {
             .build()
     }
 
+    pub fn with_name_and_class(name: String, scheduling_class: SchedulingClass, num_threads: usize) -> ThreadPool {
+        ThreadPool::new_pool_with_class(Some(name), scheduling_class, num_threads)
+    }
+
     /// **Deprecated: Use [`ThreadPool::with_name`](#method.with_name)**
     #[inline(always)]
     #[deprecated(since = "1.4.0", note = "use ThreadPool::with_name")]
     pub fn new_with_name(name: String, num_threads: usize) -> ThreadPool {
-        Self::with_name(name, num_threads)
+        ThreadPool::with_name(name, num_threads)
+    }
+
+    #[inline]
+    fn new_pool(name: Option<String>, num_threads: usize) -> ThreadPool {
+        assert!(num_threads >= 1);
+
+        let (tx, rx) = channel::<Thunk<'static>>();
+
+        let shared_data = Arc::new(ThreadPoolSharedData {
+            name: name,
+            job_receiver: Mutex::new(rx),
+            empty_condvar: Condvar::new(),
+            empty_trigger: Mutex::new(()),
+            queued_count: AtomicUsize::new(0),
+            active_count: AtomicUsize::new(0),
+            max_thread_count: AtomicUsize::new(num_threads),
+            panic_count: AtomicUsize::new(0),
+            join_generation: AtomicUsize::new(0),
+            stack_size: None,
+        });
+
+        // Threadpool threads
+        for _ in 0..num_threads {
+            spawn_in_pool(shared_data.clone(), None);
+        }
+
+        ThreadPool {
+            jobs: tx,
+            shared_data: shared_data,
+        }
+    }
+
+    fn new_pool_with_class(name: Option<String>, scheduling_class: SchedulingClass, num_threads: usize) -> ThreadPool {
+        assert!(num_threads >= 1);
+
+        let (tx, rx) = channel::<Thunk<'static>>();
+
+        let shared_data = Arc::new(ThreadPoolSharedData {
+            name: name,
+            job_receiver: Mutex::new(rx),
+            empty_condvar: Condvar::new(),
+            empty_trigger: Mutex::new(()),
+            queued_count: AtomicUsize::new(0),
+            active_count: AtomicUsize::new(0),
+            max_thread_count: AtomicUsize::new(num_threads),
+            panic_count: AtomicUsize::new(0),
+            join_generation: AtomicUsize::new(0),
+            stack_size: None,
+        });
+
+        // Threadpool threads
+        for _ in 0..num_threads {
+            spawn_in_pool(shared_data.clone(), Some(scheduling_class));
+        }
+
+        ThreadPool {
+            jobs: tx,
+            shared_data: shared_data,
+        }
     }
 
     /// Executes the function `job` on a thread in the pool.
@@ -574,7 +645,7 @@ impl ThreadPool {
         if let Some(num_spawn) = num_threads.checked_sub(prev_num_threads) {
             // Spawn new threads
             for _ in 0..num_spawn {
-                spawn_in_pool(self.shared_data.clone());
+                spawn_in_pool(self.shared_data.clone(), None);
             }
         }
     }
@@ -725,7 +796,7 @@ impl PartialEq for ThreadPool {
 }
 impl Eq for ThreadPool {}
 
-fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>) {
+fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>, scheduling_class: Option<SchedulingClass>) {
     let mut builder = thread::Builder::new();
     if let Some(ref name) = shared_data.name {
         builder = builder.name(name.clone());
@@ -735,6 +806,15 @@ fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>) {
     }
     builder
         .spawn(move || {
+            match scheduling_class {
+                None => { /* Do nothing */ }
+                Some(SchedulingClass::Normal) => {},
+                Some(SchedulingClass::Realtime) => {
+                    let tid = nix::unistd::gettid();
+                    unsafe { libc::sched_setscheduler(tid.into(), libc::SCHED_RR, 0 as *mut libc::sched_param) };
+                }
+            }
+
             // Will spawn a new thread on panic unless it is cancelled.
             let sentinel = Sentinel::new(&shared_data);
 

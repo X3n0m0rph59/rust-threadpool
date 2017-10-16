@@ -16,3 +16,5 @@ categories = ["concurrency", "os"]
 
 [dependencies]
 num_cpus = "1.6"
+libc = "0.2.32"
+nix = "0.9"
