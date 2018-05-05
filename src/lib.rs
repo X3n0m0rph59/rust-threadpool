@@ -330,7 +330,7 @@ impl Builder {
         for i in 0..num_threads {
             let cpu_idx;
             if self.spread_affinity {
-                cpu_idx = Some(1 << i % num_cpus::get());
+                cpu_idx = Some(i % num_cpus::get());
             } else {
                 cpu_idx = None;
             }
