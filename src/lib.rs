@@ -465,7 +465,7 @@ impl ThreadPool {
 
         // Threadpool threads
         for _ in 0..num_threads {
-            spawn_in_pool(shared_data.clone(), None);
+            spawn_in_pool(shared_data.clone(), None, None);
         }
 
         ThreadPool {
@@ -494,7 +494,7 @@ impl ThreadPool {
 
         // Threadpool threads
         for _ in 0..num_threads {
-            spawn_in_pool(shared_data.clone(), Some(scheduling_class));
+            spawn_in_pool(shared_data.clone(), Some(scheduling_class), None);
         }
 
         ThreadPool {
@@ -828,18 +828,11 @@ impl PartialEq for ThreadPool {
 }
 impl Eq for ThreadPool {}
 
-<<<<<<< HEAD
-fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>, scheduling_class: Option<SchedulingClass>) {
-=======
-
-
-
 fn spawn_in_pool(
     shared_data: Arc<ThreadPoolSharedData>,
     scheduling_class: Option<SchedulingClass>,
     cpu_idx: Option<usize>
 ) {
->>>>>>> Rework Code
     let mut builder = thread::Builder::new();
     if let Some(ref name) = shared_data.name {
         builder = builder.name(name.clone());
