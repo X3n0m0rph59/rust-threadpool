@@ -859,7 +859,7 @@ fn spawn_in_pool(
             }
 
             if let Some(cpu_idx) = cpu_idx {
-                let pid = nix::unistd::Pid::from_raw(0);
+                let pid = nix::unistd::Pid::from_raw(nix::unistd::gettid().into());
                 let mut cpuset = nix::sched::CpuSet::new();
                 cpuset.set(cpu_idx).unwrap();
 
