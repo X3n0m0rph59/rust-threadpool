@@ -127,7 +127,7 @@ impl<'a> Drop for Sentinel<'a> {
                 self.shared_data.panic_count.fetch_add(1, Ordering::SeqCst);
             }
             self.shared_data.no_work_notify_all();
-            spawn_in_pool(self.shared_data.clone(), None)
+            spawn_in_pool(self.shared_data.clone(), None, None)
         }
     }
 }
@@ -176,6 +176,7 @@ pub struct Builder {
     thread_name: Option<String>,
     thread_stack_size: Option<usize>,
     scheduling_class: SchedulingClass,
+    spread_affinity: bool,
 }
 
 impl Builder {
@@ -194,6 +195,7 @@ impl Builder {
             thread_name: None,
             thread_stack_size: None,
             scheduling_class: SchedulingClass::Normal(0),
+            spread_affinity: false,
         }
     }
 
@@ -288,6 +290,11 @@ impl Builder {
         self
     }
 
+    pub fn spread_affinity(mut self, spread_affinity: bool) -> Builder {
+        self.spread_affinity = spread_affinity;
+        self
+    }
+
     /// Finalize the [`Builder`] and build the [`ThreadPool`].
     ///
     /// [`Builder`]: struct.Builder.html
@@ -319,8 +326,15 @@ impl Builder {
         });
 
         // Threadpool threads
-        for _ in 0..num_threads {
-            spawn_in_pool(shared_data.clone(), Some(self.scheduling_class));
+        for i in 0..num_threads {
+            let cpu_idx;
+            if self.spread_affinity {
+                cpu_idx = Some(1 << i % num_cpus::get());
+            } else {
+                cpu_idx = None;
+            }
+                
+            spawn_in_pool(shared_data.clone(), Some(self.scheduling_class), cpu_idx);
         }
 
         ThreadPool {
@@ -595,8 +609,15 @@ impl ThreadPool {
         );
         if let Some(num_spawn) = num_threads.checked_sub(prev_num_threads) {
             // Spawn new threads
-            for _ in 0..num_spawn {
-                spawn_in_pool(self.shared_data.clone(), None);
+            for _i in 0..num_spawn {
+                // let cpu_idx;
+                // if self.spread_affinity {
+                //     cpu_idx = Some(i % num_cpus::get());
+                // } else {
+                //     cpu_idx = None;
+                // }
+
+                spawn_in_pool(self.shared_data.clone(), None, None /* Some(cpu_idx) */);
             }
         }
     }
@@ -738,6 +759,7 @@ impl Eq for ThreadPool {}
 fn spawn_in_pool(
     shared_data: Arc<ThreadPoolSharedData>,
     scheduling_class: Option<SchedulingClass>,
+    cpu_idx: Option<usize>
 ) {
     let mut builder = thread::Builder::new();
     if let Some(ref name) = shared_data.name {
@@ -762,6 +784,14 @@ fn spawn_in_pool(
                         )
                     };
                 }
+            }
+
+            if let Some(cpu_idx) = cpu_idx {
+                let pid = nix::unistd::Pid::from_raw(0);
+                let mut cpuset = nix::sched::CpuSet::new();
+                cpuset.set(cpu_idx).unwrap();
+
+                nix::sched::sched_setaffinity(pid, &cpuset).unwrap();
             }
 
             // Will spawn a new thread on panic unless it is cancelled.

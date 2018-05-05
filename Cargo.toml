@@ -1,5 +1,4 @@
 [package]
-
 name = "threadpool"
 version = "1.7.0"
 authors = ["The Rust Project Developers", "Corey Farwell <coreyf@rwell.org>", "Stefan Schindler <dns2utf8@estada.ch>"]
@@ -15,6 +14,6 @@ keywords = ["threadpool", "thread", "pool", "threading", "parallelism"]
 categories = ["concurrency", "os"]
 
 [dependencies]
-num_cpus = "1.6"
-libc = "0.2.32"
-nix = "0.9"
+num_cpus = "1.8"
+libc = "0.2.40"
+nix = "0.10"
