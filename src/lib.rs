@@ -176,6 +176,10 @@ pub struct Builder {
     thread_name: Option<String>,
     thread_stack_size: Option<usize>,
     scheduling_class: SchedulingClass,
+    /// If true, all threads in the pool will be 
+    /// pinned to a CPU core on creation
+    /// The pinning strategy is round-robin, so 
+    /// thread #0 will be pinned to core #0 and so on
     spread_affinity: bool,
 }
 
@@ -285,11 +289,13 @@ impl Builder {
         self
     }
 
+    /// Specify the scheduling class for threads in the pool
     pub fn thread_scheduling_class(mut self, scheduling_class: SchedulingClass) -> Builder {
         self.scheduling_class = scheduling_class;
         self
     }
 
+    /// Specify if threads shall be pinned to a cpu core
     pub fn spread_affinity(mut self, spread_affinity: bool) -> Builder {
         self.spread_affinity = spread_affinity;
         self
@@ -786,6 +792,7 @@ fn spawn_in_pool(
                 }
             }
 
+            // Set CPU affinity
             if let Some(cpu_idx) = cpu_idx {
                 let pid = nix::unistd::Pid::from_raw(nix::unistd::gettid().into());
                 let mut cpuset = nix::sched::CpuSet::new();
