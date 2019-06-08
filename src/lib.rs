@@ -78,9 +78,9 @@
 //! assert_eq!(an_atomic.load(Ordering::SeqCst), /* n_jobs = */ 23);
 //! ```
 
-extern crate num_cpus;
-extern crate nix;
 extern crate libc;
+extern crate nix;
+extern crate num_cpus;
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -132,7 +132,6 @@ impl<'a> Drop for Sentinel<'a> {
     }
 }
 
-
 #[derive(Debug, Copy, Clone)]
 pub enum SchedulingClass {
     Normal(i32),
@@ -144,7 +143,6 @@ impl Default for SchedulingClass {
         SchedulingClass::Normal(0)
     }
 }
-
 
 /// [`ThreadPool`] factory, which can be used in order to configure the properties of the
 /// [`ThreadPool`].
@@ -176,9 +174,9 @@ pub struct Builder {
     thread_name: Option<String>,
     thread_stack_size: Option<usize>,
     scheduling_class: SchedulingClass,
-    /// If true, all threads in the pool will be 
+    /// If true, all threads in the pool will be
     /// pinned to a CPU core on creation
-    /// The pinning strategy is round-robin, so 
+    /// The pinning strategy is round-robin, so
     /// thread #0 will be pinned to core #0 and so on
     spread_affinity: bool,
 }
@@ -340,7 +338,7 @@ impl Builder {
             } else {
                 cpu_idx = None;
             }
-                
+
             spawn_in_pool(shared_data.clone(), Some(self.scheduling_class), cpu_idx);
         }
 
@@ -372,7 +370,8 @@ impl ThreadPoolSharedData {
     /// Notify all observers joining this pool if there is no more work to do.
     fn no_work_notify_all(&self) {
         if !self.has_work() {
-            *self.empty_trigger
+            *self
+                .empty_trigger
                 .lock()
                 .expect("Unable to notify all joining threads");
             self.empty_condvar.notify_all();
@@ -480,7 +479,11 @@ impl ThreadPool {
         }
     }
 
-    fn new_pool_with_class(name: Option<String>, scheduling_class: SchedulingClass, num_threads: usize) -> ThreadPool {
+    fn new_pool_with_class(
+        name: Option<String>,
+        scheduling_class: SchedulingClass,
+        num_threads: usize,
+    ) -> ThreadPool {
         assert!(num_threads >= 1);
 
         let (tx, rx) = channel::<Thunk<'static>>();
@@ -670,7 +673,8 @@ impl ThreadPool {
     /// ```
     pub fn set_num_threads(&mut self, num_threads: usize) {
         assert!(num_threads >= 1);
-        let prev_num_threads = self.shared_data
+        let prev_num_threads = self
+            .shared_data
             .max_thread_count
             .swap(num_threads, Ordering::Release);
         if let Some(num_spawn) = num_threads.checked_sub(prev_num_threads) {
@@ -683,7 +687,11 @@ impl ThreadPool {
                 //     cpu_idx = None;
                 // }
 
-                spawn_in_pool(self.shared_data.clone(), None, None /* Some(cpu_idx) */);
+                spawn_in_pool(
+                    self.shared_data.clone(),
+                    None,
+                    None, /* Some(cpu_idx) */
+                );
             }
         }
     }
@@ -837,7 +845,7 @@ impl Eq for ThreadPool {}
 fn spawn_in_pool(
     shared_data: Arc<ThreadPoolSharedData>,
     scheduling_class: Option<SchedulingClass>,
-    cpu_idx: Option<usize>
+    cpu_idx: Option<usize>,
 ) {
     let mut builder = thread::Builder::new();
     if let Some(ref name) = shared_data.name {
