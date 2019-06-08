@@ -79,10 +79,10 @@
 //! ```
 
 extern crate libc;
+extern crate libc;
+extern crate nix;
 extern crate nix;
 extern crate num_cpus;
-extern crate nix;
-extern crate libc;
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
