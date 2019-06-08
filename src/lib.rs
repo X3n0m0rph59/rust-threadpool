@@ -79,8 +79,6 @@
 //! ```
 
 extern crate libc;
-extern crate libc;
-extern crate nix;
 extern crate nix;
 extern crate num_cpus;
 
